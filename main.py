@@ -12,13 +12,16 @@ import openai
 from openai import OpenAI
 import os
 
+from dash import dcc, html
+import plotly.graph_objs as go
+
 import logging
 
 # log = logging.getLogger("werkzeug")
 # log.setLevel(logging.ERROR)
 
 client = OpenAI(api_key="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")
-prompt = "I am going to give you a product which will be an alcoholic beverage. I want you to give me data on the alcohols: flavor, sweetness, alcohol percentage, price and facts. Return the data in JSON format. For flavors, if there are multiple flavors, list them in a list. For alcohol percentage, only return the integer. for sweetness, give a integer value from 1 to 5 where 1 is no sweet and 5 is extremely sweet. For price, give an upper and lower value of the typical price formatted with 2 decimal points. For facts, please give a description of the drink or any interesting fact about the drink. Please only return the JSON file and nothing else."
+prompt = "I am going to give you a product which will be an alcoholic beverage. I want you to give me data on the alcohols: flavor, sweetness, alcohol percentage, price, acidity, carbonation, and facts. Return the data in JSON format. For flavors, if there are multiple flavors, list them in a list. For alcohol percentage, only return the integer. For sweetness, give a integer value from 1 to 5 where 1 is no sweet and 5 is extremely sweet. For acidity, give a value from 1 to 5 where 1 is soft but 5 is highly acidic such as margaritas. For carbonation, give a value from 1 to 5 where 1 is a flat drink with no carbonations and 5 is a very fizzy drink like some beers. For price, give an upper and lower value of the typical price formatted with 2 decimal points. For facts, please give a description of the drink or any interesting fact about the drink. Please only return the JSON file and nothing else."
 
 l1_cache = {}
 black_list = {}
@@ -29,6 +32,7 @@ lookup_data = ""
 
 
 def request_alc_data(alcohol_name):
+    temp_dict = {"name": alcohol_name}
     completion = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
@@ -42,7 +46,11 @@ def request_alc_data(alcohol_name):
             },
         ],
     )
-    return completion.choices[0].message.content
+    drink_data = completion.choices[0].message.content
+    drink_data = eval(drink_data.replace("\n", ""))
+    for key in drink_data.keys():
+        temp_dict[key] = drink_data[key]
+    return temp_dict
 
 
 try:
@@ -83,30 +91,97 @@ def get_barcode_lookup(barcode):
         return "No data found"
 
 
-# create a dash application
-app = dash.Dash(__name__)
+external_stylesheets = [
+    "https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css"
+]
 
-# create a layout
+app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
 
 app.layout = html.Div(
     [
-        html.H1("Webcam Stream"),
-        html.Div(html.Img(id="image")),
-        html.P(
-            id="live-update-text",
-            children="No barcode detected",
-            style={"whiteSpace": "pre", "margin-top": "10px", "font-size": "20px"},
+        html.H1("BEVY", className="text-center"),
+        html.Div(
+            [
+                html.Div(
+                    html.Img(id="image", style={"max-width": "100%", "height": "auto"}),
+                    style={"left": "-200px", "top": "30px"},
+                ),
+                html.Div(
+                    [
+                        html.H2("Drink Information", className="text-center mb-4"),
+                        html.H3("Name"),
+                        html.P(
+                            "",
+                            id="name",
+                            className="font-size-20",
+                            style={"height": "50px"},
+                        ),
+                        html.H3("Description"),
+                        html.P(
+                            "",
+                            id="description",
+                            className="font-size-20",
+                            style={"height": "300px"},
+                        ),
+                        html.H3("Flavors"),
+                        html.P(
+                            "",
+                            id="flavors",
+                            className="font-size-20",
+                            style={"height": "400px"},
+                        ),
+                        dcc.Interval(
+                            id="interval-component",
+                            interval=100,
+                            n_intervals=0,  # in milliseconds
+                        ),
+                        dcc.Interval(
+                            id="slow-interval-component",
+                            interval=1000,
+                            n_intervals=0,  # in milliseconds
+                        ),
+                    ],
+                    className="col-md-3 mb-3",
+                    style={"padding-left": "60px", "margin-left": "60px"},
+                ),
+                html.Div(
+                    [
+                        dcc.Graph(
+                            id="radar-graph", style={"width": "100%", "height": "500px"}
+                        ),
+                    ],
+                    className="col-md-5 mb-3",
+                ),
+            ],
+            className="row",
         ),
-        dcc.Interval(
-            id="interval-component", interval=100, n_intervals=0  # in milliseconds
-        ),
-        dcc.Interval(
-            id="slow-interval-component",
-            interval=5000,
-            n_intervals=0,  # in milliseconds
-        ),
-    ]
+    ],
+    style={"max-width": "95%", "margin": "auto"},
 )
+
+
+def update_radar_graph(lookup_data):
+    print(lookup_data)
+    categories = ["Sweetness", "Alcohol %", "Price", "Carbonation", "Acidity"]
+    values = [
+        float(lookup_data["sweetness"]),
+        float(lookup_data["alcohol_percentage"]) / 10,
+        (float(lookup_data["price"]["lower"]) + float(lookup_data["price"]["upper"]))
+        / (2 * 10),
+        float(lookup_data["carbonation"]),
+        float(lookup_data["acidity"]),
+    ]
+
+    trace = go.Scatterpolar(r=values, theta=categories, fill="toself")
+
+    return {
+        "data": [trace],
+        "layout": go.Layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
+            showlegend=False,
+            title="Drink Qualities",
+        ),
+    }
 
 
 @app.callback(
@@ -137,8 +212,14 @@ def update_image(n):
 
 
 @app.callback(
-    Output("live-update-text", "children"),
+    (
+        Output("name", "children"),
+        Output("description", "children"),
+        Output("flavors", "children"),
+        Output("radar-graph", "figure"),
+    ),
     Input("slow-interval-component", "n_intervals"),
+    prevent_initial_call=True,
 )
 def update_metrics(n):
     global lookup_data
@@ -151,16 +232,25 @@ def update_metrics(n):
         if current_bar_code not in l1_cache:
             lookup_data = get_barcode_lookup(current_bar_code)
             if lookup_data != "No data found":
+                drink_data = request_alc_data(lookup_data)
                 l1_cache[current_bar_code] = {
                     "name": lookup_data,
-                    "data": request_alc_data(lookup_data),
                 }
+                for key in drink_data.keys():
+                    l1_cache[current_bar_code][key] = drink_data[key]
 
-        else:
-            lookup_data = l1_cache[current_bar_code]
-        return f"Barcode: {current_bar_code}\nLookup: {lookup_data}"
+        lookup_data = l1_cache[current_bar_code]
+        # concat list of flavors with commas
+        flavors = ""
+        for flavor in lookup_data["flavor"]:
+            flavors += flavor + ", "
+        flavors = flavors[:-2]
+
+        radar = update_radar_graph(lookup_data)
+        return lookup_data["name"], lookup_data["facts"], flavors, radar
     else:
-        return f"Barcode: {current_bar_code}\nLookup: {lookup_data}"
+        # radar = update_radar_graph(lookup_data)
+        return "", "", None
         # keep the last barcode
 
 
